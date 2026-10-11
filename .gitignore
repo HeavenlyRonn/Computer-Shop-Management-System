@@ -1,0 +1,16 @@
+# NetBeans build output — regenerates on every build
+build/
+dist/
+
+# NetBeans private per-machine state
+nbproject/private/
+
+# Compiled classes
+*.class
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
+*.orig
+*.rej
+*~
