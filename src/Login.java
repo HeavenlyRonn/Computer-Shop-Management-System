@@ -1,4 +1,3 @@
-import java.sql.*;
 import javax.swing.*;
 
 public class Login extends javax.swing.JFrame {
@@ -13,7 +12,6 @@ public class Login extends javax.swing.JFrame {
         initComponents();
         styleExtras();
         setLocationRelativeTo(null);
-        connectDB();
     }
 
     private void styleExtras() {
@@ -25,11 +23,8 @@ public class Login extends javax.swing.JFrame {
         getContentPane().setBackground(new java.awt.Color(24, 20, 22));
         // Thin dark margin around the card.
         backgroundPanel.setBorder(javax.swing.BorderFactory.createEmptyBorder(16, 16, 16, 16));
-        // Fill behavior: card grows with the window (frozen GroupLayout in
-        // initComponents is superseded at runtime; .form untouched).
-        backgroundPanel.setLayout(new java.awt.BorderLayout());
-        backgroundPanel.removeAll();
-        backgroundPanel.add(loginCard, java.awt.BorderLayout.CENTER);
+        // Centering comes from the Design (.form) GroupLayout glue gaps;
+        // the card keeps its natural size while the background fills.
 
         // Soft card edge + comfortable input padding (simple, no custom painting)
         loginCard.setBorder(javax.swing.BorderFactory.createLineBorder(new java.awt.Color(217, 198, 206), 1));
@@ -42,26 +37,6 @@ public class Login extends javax.swing.JFrame {
         // Snug fit to content; constructor centers afterward.
         pack();
     }
-
-    private void connectDB() {
-        try {
-            Class.forName("com.mysql.cj.jdbc.Driver");
-            java.sql.Connection test = connectDB.getConnection();
-            if (test != null) {
-                System.out.println("Database connected!");
-                try { test.close(); } catch (Exception ex) { }
-            } else {
-                JOptionPane.showMessageDialog(this, "DB Connection Error: cannot connect to java_database.");
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            JOptionPane.showMessageDialog(this, "DB Connection Error: " + e.getMessage());
-        }
-    }
-    
-    
-    
-    
 
     /**
      * This method is called from within the constructor to initialize the form.
@@ -86,7 +61,7 @@ public class Login extends javax.swing.JFrame {
         setTitle("Computer Shop - Login");
         setResizable(false);
 
-        backgroundPanel.setBackground(new java.awt.Color(24, 20, 22));
+        backgroundPanel.setBackground(new java.awt.Color(249, 241, 244));
 
         loginCard.setBackground(new java.awt.Color(249, 241, 244));
 
@@ -204,50 +179,41 @@ public class Login extends javax.swing.JFrame {
             return;
         }
 
-        String sql = "SELECT * FROM login_table WHERE username = ? AND password = ?";
-
         try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                JOptionPane.showMessageDialog(this, "Database Error: cannot connect to java_database. Check XAMPP.");
+            java.sql.Connection probe = connectDB.getConnection();
+            if (probe == null) {
+                JOptionPane.showMessageDialog(this, "Cannot connect to database. Please start XAMPP.");
                 return;
             }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.setString(1, username);
-                pst.setString(2, password);
-                try (ResultSet rs = pst.executeQuery()) {
-                    if (rs.next()) {
-                        String role = "counter";
-                        try {
-                            String r = rs.getString("role");
-                            if (r != null && !r.trim().isEmpty()) {
-                                role = r.trim();
-                            }
-                        } catch (Exception ex) {
-                            // Table follows strict instructions (username + password only) -> default to counter
-                            role = "counter";
-                        }
-                        JOptionPane.showMessageDialog(this, "Login Successful!");
-                        if ("customer".equalsIgnoreCase(role)) {
-                            CustomerTimer timer = new CustomerTimer(username);
-                            timer.setLocationRelativeTo(null);
-                            timer.setVisible(true);
-                        } else {
-                            Dashboard dashboard = new Dashboard();
-                            dashboard.setLocationRelativeTo(null);
-                            dashboard.setVisible(true);
-                        }
-                        this.dispose();
-                    } else {
-                        JOptionPane.showMessageDialog(this, "Invalid username or password!");
-                    }
-                }
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
-            }
-        } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this, "Database Error: " + e.getMessage());
+            probe.close();
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this, "Cannot connect to database: " + ex.getMessage());
+            return;
         }
+
+        String role = LoginDAO.validateLogin(username, PasswordUtil.hashPassword(password));
+
+        if (role == null) {
+            JOptionPane.showMessageDialog(this, "Invalid username or password!");
+            return;
+        }
+
+        if (role.trim().isEmpty()) {
+            role = "counter";
+        } else {
+            role = role.trim();
+        }
+        JOptionPane.showMessageDialog(this, "Login Successful!");
+        if ("customer".equalsIgnoreCase(role)) {
+            CustomerTimer timer = new CustomerTimer(username);
+            timer.setLocationRelativeTo(null);
+            timer.setVisible(true);
+        } else {
+            Dashboard dashboard = new Dashboard();
+            dashboard.setLocationRelativeTo(null);
+            dashboard.setVisible(true);
+        }
+        this.dispose();
     }//GEN-LAST:event_SubmitRegActionPerformed
 
     private void RegPasswordFieldActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_RegPasswordFieldActionPerformed

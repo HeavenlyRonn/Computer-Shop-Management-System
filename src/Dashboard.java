@@ -1,5 +1,5 @@
-import java.sql.*;
 import javax.swing.*;
+import java.util.List;
 
 public class Dashboard extends javax.swing.JFrame {
 
@@ -11,10 +11,12 @@ public class Dashboard extends javax.swing.JFrame {
     private final java.util.HashMap<String, Integer> activeSessionIds = new java.util.HashMap<>();
     private javax.swing.Timer refreshTimer;
     private javax.swing.JButton broadcastButton;
+    private transient DataStructureManager dsm = new DataStructureManager();
 
     public Dashboard() {
         initComponents();
         styleExtras();
+        addDataStructureButtons();
         setLocationRelativeTo(null);
         initHourBoxes();
         loadPCs();
@@ -94,27 +96,15 @@ public class Dashboard extends javax.swing.JFrame {
     }
 
     private void loadPCs() {
-        String sql = "SELECT id, pc_name FROM pcs ORDER BY pc_name";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                JOptionPane.showMessageDialog(this, "Database Error: cannot connect to java_database. Check XAMPP.");
-                return;
-            }
-            try (PreparedStatement pst = c.prepareStatement(sql);
-                 ResultSet rs = pst.executeQuery()) {
-                pcIds.clear();
-                while (rs.next()) {
-                    pcIds.put(rs.getString("pc_name"), rs.getInt("id"));
-                }
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
-            }
-            if (!pcIds.containsKey("PC1") || !pcIds.containsKey("PC2") || !pcIds.containsKey("PC3")) {
-                JOptionPane.showMessageDialog(this, "pcs table is missing PC1-PC3. Run the setup SQL first.");
-            }
-        } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this, "Database Error: " + e.getMessage());
+        java.util.Map<Integer, String> idToName = PCsDAO.getAllPCs();
+        pcIds.clear();
+        for (java.util.Map.Entry<Integer, String> e : idToName.entrySet()) {
+            pcIds.put(e.getValue(), e.getKey());
+        }
+        if (pcIds.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Database Error: cannot load PCs. Check XAMPP and setup SQL.");
+        } else if (!pcIds.containsKey("PC1") || !pcIds.containsKey("PC2") || !pcIds.containsKey("PC3")) {
+            JOptionPane.showMessageDialog(this, "pcs table is missing PC1-PC3. Run the setup SQL first.");
         }
     }
 
@@ -132,20 +122,7 @@ public class Dashboard extends javax.swing.JFrame {
     }
 
     private void autoStopExpired() {
-        String sql = "UPDATE sessions SET status = 'done', is_archived = 1 WHERE status = 'active' AND is_archived = 0 AND end_time <= NOW()";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                return;
-            }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.executeUpdate();
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
-            }
-        } catch (SQLException e) {
-            System.out.println("AutoStop Error: " + e.getMessage());
-        }
+        SessionDAO.autoStopExpired();
     }
 
     private void refreshOne(String pcName, javax.swing.JLabel statusLabel,
@@ -161,67 +138,47 @@ public class Dashboard extends javax.swing.JFrame {
             stopBtn.setEnabled(false);
             return;
         }
-        String sql = "SELECT id, end_time FROM sessions WHERE pc_id = ? AND status = 'active' AND is_archived = 0 ORDER BY id DESC LIMIT 1";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                return;
+        Session s = SessionDAO.getActiveSessionByPc(pcId);
+        if (s != null) {
+            int sessionId = s.getId();
+            long left;
+            try {
+                left = java.sql.Timestamp.valueOf(s.getEndTime()).getTime() - System.currentTimeMillis();
+            } catch (Exception ex) {
+                left = 0;
             }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.setInt(1, pcId);
-                try (ResultSet rs = pst.executeQuery()) {
-                    if (rs.next()) {
-                        int sessionId = rs.getInt("id");
-                        Timestamp end = rs.getTimestamp("end_time");
-                        long left = end.getTime() - System.currentTimeMillis();
-                        if (left < 0) {
-                            left = 0;
-                        }
-                        activeSessionIds.put(pcName, sessionId);
-                        statusLabel.setText("IN USE");
-                        statusLabel.setForeground(new java.awt.Color(186, 45, 90));
-                        remainingLabel.setText(formatHMS(left));
-                        startBtn.setEnabled(false);
-                        extendBtn.setEnabled(true);
-                        stopBtn.setEnabled(true);
-                    } else {
-                        activeSessionIds.remove(pcName);
-                        statusLabel.setText("AVAILABLE");
-                        statusLabel.setForeground(new java.awt.Color(122, 92, 104));
-                        remainingLabel.setText("0:00:00");
-                        startBtn.setEnabled(true);
-                        extendBtn.setEnabled(false);
-                        stopBtn.setEnabled(false);
-                    }
-                }
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
+            if (left < 0) {
+                left = 0;
             }
-        } catch (SQLException e) {
-            // Quiet on 1-sec refresh; error will show on button actions
-            System.out.println("Refresh Error: " + e.getMessage());
+            activeSessionIds.put(pcName, sessionId);
+            String customerName = null;
+            if (s.getCustomerId() != -1) {
+                customerName = SessionDAO.getCustomerName(s.getCustomerId());
+            }
+            if (customerName == null || customerName.trim().isEmpty()) {
+                statusLabel.setText("IN USE");
+            } else {
+                statusLabel.setText("IN USE - " + customerName.trim());
+            }
+            statusLabel.setForeground(new java.awt.Color(186, 45, 90));
+            remainingLabel.setText(formatHMS(left));
+            startBtn.setEnabled(false);
+            extendBtn.setEnabled(true);
+            stopBtn.setEnabled(true);
+        } else {
+            activeSessionIds.remove(pcName);
+            statusLabel.setText("AVAILABLE");
+            statusLabel.setForeground(new java.awt.Color(122, 92, 104));
+            remainingLabel.setText("0:00:00");
+            startBtn.setEnabled(true);
+            extendBtn.setEnabled(false);
+            stopBtn.setEnabled(false);
         }
     }
 
     private void updateSalesTotal() {
-        String sql = "SELECT COALESCE(SUM(amount), 0) AS total FROM sessions WHERE DATE(start_time) = CURDATE()";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                return;
-            }
-            try (PreparedStatement pst = c.prepareStatement(sql);
-                 ResultSet rs = pst.executeQuery()) {
-                if (rs.next()) {
-                    double total = rs.getDouble("total");
-                    salesLabel.setText(String.format("Today's Sales: P%.2f", total));
-                }
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
-            }
-        } catch (SQLException e) {
-            System.out.println("Total Error: " + e.getMessage());
-        }
+        double total = SessionDAO.getTodaySalesTotal();
+        salesLabel.setText(String.format("Today's Sales: P%.2f", total));
     }
 
     private String formatHMS(long millis) {
@@ -264,27 +221,21 @@ public class Dashboard extends javax.swing.JFrame {
         }
         int hours = selectedHours(pcName);
         double amount = hours * HOURLY_RATE;
-        String sql = "INSERT INTO sessions (pc_id, hours, amount, start_time, end_time, status, is_archived) VALUES (?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ? HOUR), 'active', 0)";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                JOptionPane.showMessageDialog(this, "Database Error: cannot connect to java_database. Check XAMPP.");
-                return;
+        String custName = JOptionPane.showInputDialog(this, "Customer name (optional):");
+        String custEmail = "";
+        if (custName != null && !custName.trim().isEmpty()) {
+            custEmail = JOptionPane.showInputDialog(this, "Customer email (optional):");
+            if (custEmail == null) {
+                custEmail = "";
             }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.setInt(1, pcId);
-                pst.setInt(2, hours);
-                pst.setDouble(3, amount);
-                pst.setInt(4, hours);
-                pst.executeUpdate();
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
-            }
-            JOptionPane.showMessageDialog(this, pcName + " started: " + hours + " hr (P" + String.format("%.2f", amount) + ").");
-            refreshState();
-        } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this, "Database Error: " + e.getMessage());
         }
+        int customerId = -1;
+        if (custName != null && !custName.trim().isEmpty()) {
+            customerId = SessionDAO.registerOrGetCustomer(custName, custEmail, "");
+        }
+        SessionDAO.startSession(pcId, hours, amount, customerId);
+        JOptionPane.showMessageDialog(this, pcName + " started: " + hours + " hr (P" + String.format("%.2f", amount) + ").");
+        refreshState();
     }
 
     private void doExtend(String pcName) {
@@ -295,27 +246,10 @@ public class Dashboard extends javax.swing.JFrame {
         }
         int add = selectedHours(pcName);
         double addAmount = add * HOURLY_RATE;
-        String sql = "UPDATE sessions SET hours = hours + ?, amount = amount + ?, end_time = DATE_ADD(end_time, INTERVAL ? HOUR) WHERE id = ?";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                JOptionPane.showMessageDialog(this, "Database Error: cannot connect to java_database. Check XAMPP.");
-                return;
-            }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.setInt(1, add);
-                pst.setDouble(2, addAmount);
-                pst.setInt(3, add);
-                pst.setInt(4, sessionId);
-                pst.executeUpdate();
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
-            }
-            JOptionPane.showMessageDialog(this, pcName + " extended: +" + add + " hr (P" + String.format("%.2f", addAmount) + ").");
-            refreshState();
-        } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this, "Database Error: " + e.getMessage());
-        }
+        dsm.pushExtension(sessionId, add, addAmount);
+        SessionDAO.extendSession(sessionId, add, addAmount);
+        JOptionPane.showMessageDialog(this, pcName + " extended: +" + add + " hr (P" + String.format("%.2f", addAmount) + ").");
+        refreshState();
     }
 
     private void doStop(String pcName) {
@@ -324,24 +258,9 @@ public class Dashboard extends javax.swing.JFrame {
             JOptionPane.showMessageDialog(this, pcName + " has no active session.");
             return;
         }
-        String sql = "UPDATE sessions SET status = 'done', is_archived = 1 WHERE id = ?";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                JOptionPane.showMessageDialog(this, "Database Error: cannot connect to java_database. Check XAMPP.");
-                return;
-            }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.setInt(1, sessionId);
-                pst.executeUpdate();
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
-            }
-            JOptionPane.showMessageDialog(this, pcName + " stopped. Now available.");
-            refreshState();
-        } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this, "Database Error: " + e.getMessage());
-        }
+        SessionDAO.stopSession(sessionId);
+        JOptionPane.showMessageDialog(this, pcName + " stopped. Now available.");
+        refreshState();
     }
 
     private void broadcastButtonActionPerformed(java.awt.event.ActionEvent evt) {
@@ -353,27 +272,120 @@ public class Dashboard extends javax.swing.JFrame {
         if (message == null || message.trim().isEmpty()) {
             return;
         }
-        String sql = "UPDATE pcs SET broadcast_pending = 1, broadcast_message = ? WHERE id IN (SELECT pc_id FROM sessions WHERE status = 'active' AND is_archived = 0)";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                JOptionPane.showMessageDialog(this, "Database Error: cannot connect to java_database. Check XAMPP.");
+        int count = PCsDAO.broadcastToActivePCs(message.trim());
+        if (count == 0) {
+            JOptionPane.showMessageDialog(this, "No active PCs to broadcast to.");
+        } else {
+            JOptionPane.showMessageDialog(this, "Broadcast sent to " + count + " PC(s).");
+        }
+    }
+
+    private void addDataStructureButtons() {
+        // Create a JPanel at the top of the content pane with two buttons
+        JPanel topPanel = new JPanel(new java.awt.FlowLayout(java.awt.FlowLayout.RIGHT));
+        JButton btnSort = new JButton("Sort by Amount");
+        JButton btnUndo = new JButton("Undo Last Extend");
+        JButton btnLogs = new JButton("View Logs");
+        JButton btnFind = new JButton("Find Session");
+
+        btnSort.addActionListener(e -> doSortByAmount());
+        btnUndo.addActionListener(e -> doUndoLastExtend());
+        btnFind.addActionListener(e -> doFindSession());
+        btnLogs.addActionListener(e -> {
+            List<String> logs = SessionDAO.getRecentLogs();
+            if (logs.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "No log entries yet.");
                 return;
             }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.setString(1, message.trim());
-                int count = pst.executeUpdate();
-                if (count == 0) {
-                    JOptionPane.showMessageDialog(this, "No active PCs to broadcast to.");
-                } else {
-                    JOptionPane.showMessageDialog(this, "Broadcast sent to " + count + " PC(s).");
-                }
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
+            StringBuilder sb = new StringBuilder();
+            for (String line : logs) {
+                sb.append(line).append("\n");
             }
-        } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this, "Database Error: " + e.getMessage());
+            JTextArea area = new JTextArea(sb.toString());
+            area.setEditable(false);
+            JScrollPane scroll = new JScrollPane(area);
+            scroll.setPreferredSize(new java.awt.Dimension(500, 300));
+            JOptionPane.showMessageDialog(this, scroll, "Recent Session Logs", JOptionPane.PLAIN_MESSAGE);
+        });
+
+        topPanel.add(btnUndo);
+        topPanel.add(btnSort);
+        topPanel.add(btnLogs);
+        topPanel.add(btnFind);
+
+        // Add to the top of the content pane using BorderLayout.NORTH
+        getContentPane().setLayout(new java.awt.BorderLayout());
+        getContentPane().add(topPanel, java.awt.BorderLayout.NORTH);
+        getContentPane().add(backgroundPanel, java.awt.BorderLayout.CENTER);
+        revalidate();
+        repaint();
+    }
+
+    private void doSortByAmount() {
+        List<Session> all = SessionDAO.getAllSessions();
+        if (all.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No sessions to sort.");
+            return;
         }
+        List<Session> sorted = dsm.sortSessionsByAmount(all);
+        StringBuilder sb = new StringBuilder("Sessions sorted by amount (descending):\n\n");
+        for (Session s : sorted) {
+            sb.append("ID: ").append(s.getId())
+              .append(" | PC: ").append(s.getPcId())
+              .append(" | Amount: ").append(s.getAmount())
+              .append(" | Status: ").append(s.getStatus()).append("\n");
+        }
+        JTextArea area = new JTextArea(sb.toString());
+        area.setEditable(false);
+        JScrollPane scroll = new JScrollPane(area);
+        scroll.setPreferredSize(new java.awt.Dimension(400, 300));
+        JOptionPane.showMessageDialog(this, scroll, "Sorted Sessions", JOptionPane.PLAIN_MESSAGE);
+    }
+
+    private void doFindSession() {
+        String input = JOptionPane.showInputDialog(this, "Enter Session ID to find:");
+        if (input == null || input.trim().isEmpty()) {
+            return;
+        }
+        int targetId;
+        try {
+            targetId = Integer.parseInt(input.trim());
+        } catch (NumberFormatException ex) {
+            JOptionPane.showMessageDialog(this, "Please enter a valid number.");
+            return;
+        }
+        List<Session> all = SessionDAO.getAllSessions();
+        if (all.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No sessions in database.");
+            return;
+        }
+        List<Session> sorted = dsm.sortSessionsById(all);
+        Session found = dsm.binarySearchById(sorted, targetId);
+        if (found == null) {
+            JOptionPane.showMessageDialog(this, "Session ID " + targetId + " not found.");
+            return;
+        }
+        String msg = "Session found:\n\n"
+            + "ID: " + found.getId() + "\n"
+            + "PC ID: " + found.getPcId() + "\n"
+            + "Customer ID: " + found.getCustomerId() + "\n"
+            + "Hours: " + found.getHours() + "\n"
+            + "Amount: P" + String.format("%.2f", found.getAmount()) + "\n"
+            + "Status: " + found.getStatus() + "\n"
+            + "Start: " + found.getStartTime() + "\n"
+            + "End: " + found.getEndTime();
+        JOptionPane.showMessageDialog(this, msg, "Session Found", JOptionPane.INFORMATION_MESSAGE);
+    }
+
+    private void doUndoLastExtend() {
+        DataStructureManager.ExtendRecord rec = dsm.undoLastExtension();
+        if (rec == null) {
+            JOptionPane.showMessageDialog(this, "Nothing to undo.");
+            return;
+        }
+        SessionDAO.revertLastExtend(rec.sessionId, rec.extraHours, rec.extraAmount);
+        JOptionPane.showMessageDialog(this, "Undo successful for session ID: " + rec.sessionId);
+        refreshState();
     }
 
     /**

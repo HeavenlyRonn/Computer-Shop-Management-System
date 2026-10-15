@@ -1,4 +1,3 @@
-import java.sql.*;
 import javax.swing.*;
 
 public class CustomerTimer extends javax.swing.JFrame {
@@ -47,25 +46,8 @@ public class CustomerTimer extends javax.swing.JFrame {
         if (username == null || username.trim().isEmpty()) {
             return;
         }
-        String sql = "SELECT id FROM pcs WHERE UPPER(pc_name) = UPPER(?)";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                return;
-            }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.setString(1, username.trim());
-                try (ResultSet rs = pst.executeQuery()) {
-                    if (rs.next()) {
-                        pcId = rs.getInt("id");
-                    }
-                }
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
-            }
-        } catch (SQLException e) {
-            System.out.println("Resolve PC Error: " + e.getMessage());
-        }
+        int id = PCsDAO.getPcIdByName(username.trim());
+        pcId = (id == -1) ? null : id;
         if (pcId == null) {
             noteLabel.setText("No PC linked to this account.");
         }
@@ -76,54 +58,43 @@ public class CustomerTimer extends javax.swing.JFrame {
             timerLabel.setText("0:00:00");
             return;
         }
-        String sql = "SELECT id, end_time FROM sessions WHERE pc_id = ? AND status = 'active' AND is_archived = 0 ORDER BY id DESC LIMIT 1";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                return;
+        Session s = SessionDAO.getActiveSessionByPc(pcId);
+        if (s != null) {
+            int sessionId = s.getId();
+            long left;
+            try {
+                left = java.sql.Timestamp.valueOf(s.getEndTime()).getTime() - System.currentTimeMillis();
+            } catch (Exception ex) {
+                left = 0;
             }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.setInt(1, pcId);
-                try (ResultSet rs = pst.executeQuery()) {
-                    if (rs.next()) {
-                        int sessionId = rs.getInt("id");
-                        Timestamp end = rs.getTimestamp("end_time");
-                        long left = end.getTime() - System.currentTimeMillis();
-                        if (left < 0) {
-                            left = 0;
-                        }
-                        if (lastSessionId == null || lastSessionId != sessionId) {
-                            lastSessionId = sessionId;
-                            warned30 = false;
-                            warned5 = false;
-                            timesUpShown = false;
-                        }
-                        timerLabel.setText(formatHMS(left));
-                        noteLabel.setText("Session in progress.");
-                        if (left <= 0 && !timesUpShown) {
-                            timesUpShown = true;
-                            JOptionPane.showMessageDialog(this, "Time's Up! Please go to the counter.");
-                        } else if (left <= 5 * 60 * 1000 && left > 0 && !warned5) {
-                            warned5 = true;
-                            JOptionPane.showMessageDialog(this, "5 minutes remaining. Please save your work.");
-                        } else if (left <= 30 * 60 * 1000 && left > 5 * 60 * 1000 && !warned30) {
-                            warned30 = true;
-                            JOptionPane.showMessageDialog(this, "30 minutes remaining.");
-                        }
-                    } else {
-                        lastSessionId = null;
-                        warned30 = false;
-                        warned5 = false;
-                        timesUpShown = false;
-                        timerLabel.setText("0:00:00");
-                        noteLabel.setText("Waiting for counter to start session.");
-                    }
-                }
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
+            if (left < 0) {
+                left = 0;
             }
-        } catch (SQLException e) {
-            System.out.println("Timer Refresh Error: " + e.getMessage());
+            if (lastSessionId == null || lastSessionId != sessionId) {
+                lastSessionId = sessionId;
+                warned30 = false;
+                warned5 = false;
+                timesUpShown = false;
+            }
+            timerLabel.setText(formatHMS(left));
+            noteLabel.setText("Session in progress.");
+            if (left <= 0 && !timesUpShown) {
+                timesUpShown = true;
+                JOptionPane.showMessageDialog(this, "Time's Up! Please go to the counter.");
+            } else if (left <= 5 * 60 * 1000 && left > 0 && !warned5) {
+                warned5 = true;
+                JOptionPane.showMessageDialog(this, "5 minutes remaining. Please save your work.");
+            } else if (left <= 30 * 60 * 1000 && left > 5 * 60 * 1000 && !warned30) {
+                warned30 = true;
+                JOptionPane.showMessageDialog(this, "30 minutes remaining.");
+            }
+        } else {
+            lastSessionId = null;
+            warned30 = false;
+            warned5 = false;
+            timesUpShown = false;
+            timerLabel.setText("0:00:00");
+            noteLabel.setText("Waiting for counter to start session.");
         }
         checkBroadcast();
     }
@@ -132,27 +103,7 @@ public class CustomerTimer extends javax.swing.JFrame {
         if (pcId == null) {
             return;
         }
-        String sql = "SELECT broadcast_pending, broadcast_message FROM pcs WHERE id = ?";
-        String message = null;
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                return;
-            }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.setInt(1, pcId);
-                try (ResultSet rs = pst.executeQuery()) {
-                    if (rs.next() && rs.getInt("broadcast_pending") == 1) {
-                        message = rs.getString("broadcast_message");
-                    }
-                }
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
-            }
-        } catch (SQLException e) {
-            System.out.println("Broadcast Error: " + e.getMessage());
-            return;
-        }
+        String message = PCsDAO.getPendingBroadcast(pcId);
         if (message == null) {
             return;
         }
@@ -161,21 +112,7 @@ public class CustomerTimer extends javax.swing.JFrame {
     }
 
     private void clearBroadcast() {
-        String sql = "UPDATE pcs SET broadcast_pending = 0, broadcast_message = '' WHERE id = ?";
-        try {
-            Connection c = connectDB.getConnection();
-            if (c == null) {
-                return;
-            }
-            try (PreparedStatement pst = c.prepareStatement(sql)) {
-                pst.setInt(1, pcId);
-                pst.executeUpdate();
-            } finally {
-                try { c.close(); } catch (Exception ex) { }
-            }
-        } catch (SQLException e) {
-            System.out.println("Broadcast Error: " + e.getMessage());
-        }
+        PCsDAO.clearBroadcast(pcId);
     }
 
     private String formatHMS(long millis) {
